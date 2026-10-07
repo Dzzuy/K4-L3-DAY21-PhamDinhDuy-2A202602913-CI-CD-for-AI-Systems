@@ -4,6 +4,7 @@ setuptools<81
 sqlalchemy<2.1
 scikit-learn==1.4.2
 numpy==1.26.4
+scipy==1.13.1
 pandas==2.2.2
 dvc[s3]==3.50.1
 pathspec==0.11.2

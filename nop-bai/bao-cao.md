@@ -47,7 +47,7 @@ Khoảng 24,8% mẫu có thu nhập trên 50K. Dự đoán mọi mẫu là thu n
 | Bước 2 (chỉ `train_batch1`) | 0.736842 | 0.8600 |
 | Bước 3 (thêm `train_batch2`) | 0.753731 | 0.8680 |
 
-**Nhận xét:** Tăng dữ liệu huấn luyện từ 22.361 lên 44.722 mẫu giúp F1 lớp dương tăng 0,016889 và accuracy tăng 0,0080 trên cùng tập holdout. Batch mới cải thiện khả năng nhận diện thu nhập cao.
+**Nhận xét:** Tăng dữ liệu huấn luyện từ 22.361 lên 44.722 mẫu giúp F1 lớp dương tăng 0,016889 và accuracy tăng 0,0080 trên cùng tập holdout. Batch mới cải thiện khả năng nhận diện thu nhập cao. [Run tự động từ commit dữ liệu `065716f`](https://github.com/Dzzuy/K4-L3-DAY21-PhamDinhDuy-2A202602913-CI-CD-for-AI-Systems/actions/runs/37662702341) hoàn thành cả bốn jobs.
 
 ---
 

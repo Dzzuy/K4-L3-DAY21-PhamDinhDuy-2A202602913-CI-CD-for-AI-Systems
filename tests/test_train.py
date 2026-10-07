@@ -1,13 +1,25 @@
-import os
 import json
+import os
+
+import joblib
 import numpy as np
 import pandas as pd
+import pytest
+from sklearn.metrics import accuracy_score, f1_score
+
 from src.train import train
 
-
 FEATURE_NAMES = [
-    "age", "workclass", "education_num", "marital_status", "occupation",
-    "relationship", "sex", "capital_gain", "capital_loss", "hours_per_week",
+    "age",
+    "workclass",
+    "education_num",
+    "marital_status",
+    "occupation",
+    "relationship",
+    "sex",
+    "capital_gain",
+    "capital_loss",
+    "hours_per_week",
 ]
 
 
@@ -21,42 +33,34 @@ def _make_temp_data(tmp_path):
     rng = np.random.default_rng(0)
     n = 200
 
-    # TODO 1: Tao mang X co kich thuoc (n, len(FEATURE_NAMES)) voi gia tri [0, 1)
-    # X = rng.random((n, len(FEATURE_NAMES)))
+    X = rng.random((n, len(FEATURE_NAMES)))
+    y = rng.integers(0, 2, size=n)
+    df = pd.DataFrame(X, columns=FEATURE_NAMES)
+    df["target"] = y
+    train_path = str(tmp_path / "train.csv")
+    eval_path = str(tmp_path / "holdout.csv")
+    df.iloc[:160].to_csv(train_path, index=False)
+    df.iloc[160:].to_csv(eval_path, index=False)
+    return train_path, eval_path
 
-    # TODO 2: Tao mang y gom n phan tu nguyen ngau nhien trong [0, 2)
-    # Chu y: bai toan nay chi co HAI lop (0 va 1), nen can tren la 2.
-    # y = rng.integers(0, 2, size=n)
 
-    # TODO 3: Xay dung DataFrame, them cot "target"
-    # df = pd.DataFrame(X, columns=FEATURE_NAMES)
-    # df["target"] = y
-
-    # TODO 4: Luu 160 dong dau lam tap huan luyen, 40 dong cuoi lam tap holdout
-    # train_path = str(tmp_path / "train.csv")
-    # eval_path  = str(tmp_path / "holdout.csv")
-    # df.iloc[:160].to_csv(train_path, index=False)
-    # df.iloc[160:].to_csv(eval_path,  index=False)
-
-    # TODO 5: Tra ve (train_path, eval_path)
-    # return train_path, eval_path
-
-    pass  # xoa dong nay sau khi hoan thanh tat ca TODO ben tren
+@pytest.fixture(autouse=True)
+def isolated_outputs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", (tmp_path / "mlruns").as_uri())
 
 
 def test_train_returns_float(tmp_path):
     """Kiem tra ham train() tra ve mot so thuc nam trong [0.0, 1.0]."""
     train_path, eval_path = _make_temp_data(tmp_path)
 
-    # TODO 6: Goi ham train() voi sieu tham so nho
-    # (n_estimators=10, learning_rate=0.1, max_depth=2) va cac duong dan file vua tao
-    # f1 = train({"n_estimators": 10, "learning_rate": 0.1, "max_depth": 2}, ...)
-
-    # TODO 7: Kiem tra ket qua
-    # assert isinstance(f1, float)
-    # assert 0.0 <= f1 <= 1.0
-
-    pass  # xoa dong nay sau khi hoan thanh tat ca TODO ben tren
+    f1 = train(
+        {"n_estimators": 10, "learning_rate": 0.1, "max_depth": 2},
+        data_path=train_path,
+        eval_path=eval_path,
+    )
+    assert isinstance(f1, float)
+    assert 0.0 <= f1 <= 1.0
 
 
 def test_report_file_created(tmp_path):
@@ -68,14 +72,23 @@ def test_report_file_created(tmp_path):
         eval_path=eval_path,
     )
 
-    # TODO 8: Kiem tra file ton tai va noi dung dung dinh dang
-    # assert os.path.exists("outputs/report.json")
-    # with open("outputs/report.json") as f:
-    #     report = json.load(f)
-    # assert "f1_score" in report
-    # assert "accuracy" in report
-
-    pass  # xoa dong nay sau khi hoan thanh tat ca TODO ben tren
+    assert os.path.exists("outputs/report.json")
+    with open("outputs/report.json", encoding="utf-8") as report_file:
+        report = json.load(report_file)
+    model = joblib.load("models/model.joblib")
+    holdout = pd.read_csv(eval_path)
+    predictions = (
+        model.predict_proba(holdout[FEATURE_NAMES])[:, 1]
+        >= report["decision_threshold"]
+    ).astype(int)
+    assert report["f1_score"] == pytest.approx(f1_score(holdout["target"], predictions))
+    assert report["accuracy"] == pytest.approx(
+        accuracy_score(holdout["target"], predictions)
+    )
+    assert 0.1 <= report["decision_threshold"] <= 0.9
+    assert 0.0 <= report["f1_at_0_5"] <= report["f1_score"]
+    assert 0.0 <= report["positive_rate"] <= 1.0
+    assert "Confusion matrix" in (tmp_path / "outputs/detail.txt").read_text()
 
 
 def test_model_file_created(tmp_path):
@@ -87,7 +100,5 @@ def test_model_file_created(tmp_path):
         eval_path=eval_path,
     )
 
-    # TODO 9: Kiem tra file model ton tai
-    # assert os.path.exists("models/model.joblib")
-
-    pass  # xoa dong nay sau khi hoan thanh tat ca TODO ben tren
+    assert os.path.exists("models/model.joblib")
+    assert hasattr(joblib.load("models/model.joblib"), "predict")

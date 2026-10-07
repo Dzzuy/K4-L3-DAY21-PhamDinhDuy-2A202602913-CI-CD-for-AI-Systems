@@ -6,158 +6,188 @@ on:
     paths:
       - 'data/**.dvc'
       - 'src/**.py'
+      - 'tests/**.py'
       - 'params.yaml'
+      - 'requirements.txt'
+      - '.github/workflows/cicd.yml'
   workflow_dispatch:
 
-jobs:
+concurrency:
+  group: income-model-release
+  cancel-in-progress: false
 
-  # ---------------------------------------------------------------------------
-  # JOB 1 - UNIT TEST
-  # Chay unit tests tren du lieu ao (khong can ket noi cloud storage).
-  # Neu co bat ky test nao that bai, pipeline dung lai o day va khong tien hanh
-  # huan luyen hay trien khai.
-  # ---------------------------------------------------------------------------
+jobs:
   unit-test:
     name: Unit Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: '3.10'
+      - run: pip install -r requirements.txt
+      - run: pytest tests/ -v
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run unit tests
-        # TODO 1: Viet lenh de chay pytest tren thu muc tests/ voi co -v
-        run: # <dien lenh o day>
-
-
-  # ---------------------------------------------------------------------------
-  # JOB 2 - TRAIN
-  # Xac thuc cloud storage, pull du lieu bang DVC, huan luyen mo hinh, upload artifact.
-  # Chi chay khi Job 1 (Unit Test) hoan thanh thanh cong.
-  # ---------------------------------------------------------------------------
   train:
     name: Train
     needs: unit-test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       f1: ${{ steps.read_report.outputs.f1 }}
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Authenticate to Cloud Storage
-        # TODO 2: Ghi noi dung credentials ra file tam va set bien moi truong xac thuc.
-        # GCP:   echo '${{ secrets.STORAGE_CREDENTIALS }}' > /tmp/sa-key.json
-        #        echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/sa-key.json" >> $GITHUB_ENV
-        # AWS:   echo "AWS_ACCESS_KEY_ID=..." >> $GITHUB_ENV  (lay tu secrets)
-        #        echo "AWS_SECRET_ACCESS_KEY=..." >> $GITHUB_ENV
-        # Azure: echo "AZURE_STORAGE_CONNECTION_STRING=..." >> $GITHUB_ENV
-        run: |
-          # <dien code o day>
-
-      - name: Pull data with DVC
-        # TODO 3: Pull cac file du lieu can thiet tu cloud storage bang lenh dvc pull.
-        #         Chi pull train_batch1.csv va holdout.csv (khong can train_batch2.csv).
-        run: # <dien lenh o day>
-
+          python-version: '3.10'
+      - run: pip install -r requirements.txt
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Pull training and holdout data
+        run: dvc pull data/train_batch1.csv.dvc data/holdout.csv.dvc
       - name: Train model
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
         run: python src/train.py
+      - name: Verify training run was saved to DagsHub
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from urllib.parse import urlparse
 
+          from mlflow.tracking import MlflowClient
+
+          tracking_uri = os.environ["MLFLOW_TRACKING_URI"]
+          parsed = urlparse(tracking_uri)
+          if parsed.scheme != "https" or parsed.hostname != "dagshub.com":
+              raise SystemExit("MLFLOW_TRACKING_URI must point to DagsHub over HTTPS")
+          with open("outputs/report.json", encoding="utf-8") as report_file:
+              report = json.load(report_file)
+          run = MlflowClient().get_run(report["mlflow_run_id"])
+          for metric in ("f1_score", "accuracy"):
+              if abs(run.data.metrics[metric] - report[metric]) > 1e-9:
+                  raise SystemExit(f"DagsHub {metric} does not match the CI report")
+          print(f"Verified DagsHub MLflow run {run.info.run_id} with F1 and accuracy")
+          PY
       - name: Read report
         id: read_report
-        # TODO 4: Doc gia tri "f1_score" tu outputs/report.json bang Python inline.
-        #         Set ket qua thanh output "f1" de job quality-gate co the doc.
-        #
-        # Goi y:
-        #   F1=$(python -c "import json; d=json.load(open('outputs/report.json')); print(d['f1_score'])")
-        #   echo "f1=$F1" >> $GITHUB_OUTPUT
         run: |
-          # <dien code o day>
-
-      - name: Upload model to Cloud Storage
-        # TODO 5: Su dung cloud SDK de upload models/model.joblib len
-        #         <bucket>/artifacts/current/model.joblib.
-        #         Ten bucket lay tu secret ARTIFACT_BUCKET.
-        run: |
-          python - <<'PYEOF'
-          # <dien code Python o day>
-          PYEOF
-
-      - name: Save report as artifact
+          F1=$(python -c "import json; print(json.load(open('outputs/report.json'))['f1_score'])")
+          echo "f1=$F1" >> "$GITHUB_OUTPUT"
+      - name: Stage immutable candidate
+        env:
+          ARTIFACT_BUCKET: ${{ secrets.ARTIFACT_BUCKET }}
+        run: python -m src.artifacts stage
+      - name: Save evaluation reports
         uses: actions/upload-artifact@v4
         with:
           name: report
-          path: outputs/report.json
+          path: |
+            outputs/report.json
+            outputs/detail.txt
 
-
-  # ---------------------------------------------------------------------------
-  # JOB 3 - QUALITY GATE
-  # Kiem tra nguong chat luong (f1_score >= 0.65).
-  # Pipeline dung lai o day neu mo hinh chua dat yeu cau.
-  #
-  # Luu y: nguong o day dat tren f1_score chu KHONG phai accuracy. Bo du lieu
-  # Adult co ty le lop 75/25, nen mot mo hinh doan bua "thu nhap thap" cho moi
-  # mau da dat accuracy 0.75 ma hoan toan vo dung.
-  # Chi chay khi Job 2 (Train) hoan thanh thanh cong.
-  # ---------------------------------------------------------------------------
   quality-gate:
     name: Quality Gate
     needs: train
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: pip install boto3==1.43.100
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Check positive-class F1 and regression guard
+        env:
+          ARTIFACT_BUCKET: ${{ secrets.ARTIFACT_BUCKET }}
+        run: python -m src.artifacts gate
 
-      - name: Check quality gate
-        # TODO 6: Doc f1 tu output cua job train.
-        #         Neu f1 < 0.65, ket thuc voi loi ro rang.
-        #         Neu dat nguong, in thong bao va tiep tuc.
-        #
-        # Goi y:
-        #   f1 = float("${{ needs.train.outputs.f1 }}")
-        #   if f1 < 0.65:
-        #       raise SystemExit(f"FAILED: f1_score {f1:.4f} < 0.65. Huy trien khai.")
-        #   print("PASSED: dang trien khai model.")
-        run: |
-          python - <<'PYEOF'
-          # <dien code Python o day>
-          PYEOF
-
-
-  # ---------------------------------------------------------------------------
-  # JOB 4 - RELEASE
-  # Trien khai len VM qua SSH.
-  # Chi chay khi Job 3 (Quality Gate) hoan thanh thanh cong.
-  # ---------------------------------------------------------------------------
   release:
     name: Release
     needs: quality-gate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
-
-      - name: SSH deploy to VM
-        uses: appleboy/ssh-action@v1.0.3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            # TODO 7: Restart service income-api tren VM.
-            # TODO 8: Cho server san sang roi goi curl /healthz de xac nhan.
-            #         Neu health check that bai sau nhieu lan thu, thoat voi exit 1.
-            #
-            # Goi y:
-            #   sudo systemctl restart income-api
-            #   sleep 5
-            #   curl -sf http://localhost:8080/healthz && echo "Health check passed." || exit 1
-            # <dien lenh bash o day>
+          python-version: '3.10'
+      - run: pip install boto3==1.43.100
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Stage inference API source
+        env:
+          ARTIFACT_BUCKET: ${{ secrets.ARTIFACT_BUCKET }}
+        run: aws s3 cp src/serve.py "s3://$ARTIFACT_BUCKET/deployment/serve.py"
+      - name: Promote validated model
+        env:
+          ARTIFACT_BUCKET: ${{ secrets.ARTIFACT_BUCKET }}
+        run: python -m src.artifacts promote
+      - name: Deploy through Systems Manager and verify the API
+        env:
+          ARTIFACT_BUCKET: ${{ secrets.ARTIFACT_BUCKET }}
+          SERVER_INSTANCE_ID: ${{ secrets.SERVER_INSTANCE_ID }}
+        run: |
+          python - <<'PY' > /tmp/day21-ssm-parameters.json
+          import json
+          import os
+
+          bucket = os.environ["ARTIFACT_BUCKET"]
+          download = (
+              "/home/ubuntu/income-venv/bin/python -c "
+              + repr(
+                  "import boto3; boto3.client('s3').download_file("
+                  f"'{bucket}', 'deployment/serve.py', '/home/ubuntu/src/serve.py')"
+              )
+          )
+          commands = [
+              "set -eu",
+              download,
+              "chown ubuntu:ubuntu /home/ubuntu/src/serve.py",
+              "systemctl restart income-api",
+              "for attempt in 1 2 3 4 5; do curl -fsS http://localhost:8080/healthz && exit 0; sleep 3; done",
+              "journalctl -u income-api -n 30 --no-pager",
+              "exit 1",
+          ]
+          print(json.dumps({"commands": commands}))
+          PY
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$SERVER_INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --parameters file:///tmp/day21-ssm-parameters.json \
+            --query 'Command.CommandId' --output text)
+          if ! aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" --instance-id "$SERVER_INSTANCE_ID"; then
+            aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" --instance-id "$SERVER_INSTANCE_ID" \
+              --query '[Status,StandardErrorContent]' --output text || true
+            exit 1
+          fi
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" --instance-id "$SERVER_INSTANCE_ID" \
+            --query Status --output text)
+          test "$STATUS" = Success

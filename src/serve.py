@@ -1,41 +1,43 @@
+"""Income inference API. Download the released model at startup."""
+
+import json
+import os
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import boto3
+import joblib
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from google.cloud import storage
-import joblib
-import os
 
-app = FastAPI()
-
-ARTIFACT_BUCKET = os.environ["ARTIFACT_BUCKET"]
-MODEL_KEY = "artifacts/current/model.joblib"
-MODEL_PATH = os.path.expanduser("~/models/model.joblib")
+MANIFEST_KEY = "artifacts/current/manifest.json"
+MODEL_PATH = Path.home() / "models" / "model.joblib"
+REPORT_PATH = Path.home() / "models" / "report.json"
 
 
-def download_model():
-    """
-    Tai file model.joblib tu cloud storage ve may khi server khoi dong.
-
-    Ham nay duoc goi mot lan khi module duoc import. Su dung
-    GOOGLE_APPLICATION_CREDENTIALS de xac thuc (duoc dat trong systemd service).
-    """
-    # TODO 1: Tao storage.Client()
-    # client = storage.Client()
-
-    # TODO 2: Lay bucket va blob tuong ung
-    # bucket = client.bucket(ARTIFACT_BUCKET)
-    # blob   = bucket.blob(MODEL_KEY)
-
-    # TODO 3: Tai file model xuong may
-    # blob.download_to_filename(MODEL_PATH)
-
-    # TODO 4: In thong bao thanh cong
-    # print("Model da duoc tai xuong tu cloud storage.")
-
-    pass  # xoa dong nay sau khi hoan thanh tat ca TODO ben tren
+def download_model() -> tuple[object, float]:
+    """Load a model and its matching threshold from S3."""
+    bucket_name = os.environ["ARTIFACT_BUCKET"]
+    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    s3 = boto3.client("s3")
+    manifest = json.loads(
+        s3.get_object(Bucket=bucket_name, Key=MANIFEST_KEY)["Body"].read()
+    )
+    prefix = manifest["prefix"]
+    s3.download_file(bucket_name, f"{prefix}/model.joblib", str(MODEL_PATH))
+    s3.download_file(bucket_name, f"{prefix}/report.json", str(REPORT_PATH))
+    with REPORT_PATH.open(encoding="utf-8") as report_file:
+        report = json.load(report_file)
+    return joblib.load(MODEL_PATH), float(report["decision_threshold"])
 
 
-download_model()
-model = joblib.load(MODEL_PATH)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.model, app.state.decision_threshold = download_model()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 class ScoreRequest(BaseModel):
@@ -43,42 +45,25 @@ class ScoreRequest(BaseModel):
 
 
 @app.get("/healthz")
-def healthz():
-    """
-    Endpoint kiem tra suc khoe server.
-    GitHub Actions goi endpoint nay sau khi deploy de xac nhan server dang chay.
-
-    Tra ve: {"status": "ok"}
-    """
-    # TODO 5: Tra ve dict {"status": "ok"}
-    pass  # xoa dong nay sau khi hoan thanh
+async def healthz() -> dict[str, str]:
+    return {"status": "ok"}
 
 
 @app.post("/score")
-def score(req: ScoreRequest):
-    """
-    Endpoint suy luan chinh.
-
-    Dau vao : JSON {"features": [f1, f2, ..., f10]}
-    Dau ra  : JSON {"prediction": <0|1>, "label": <"thu_nhap_thap"|"thu_nhap_cao">}
-
-    Thu tu 10 dac trung (khop voi thu tu trong FEATURE_NAMES cua test):
-        age, workclass, education_num, marital_status, occupation,
-        relationship, sex, capital_gain, capital_loss, hours_per_week
-    """
-    # TODO 6: Kiem tra so luong dac trung.
-    # Neu len(req.features) != 10, raise HTTPException(status_code=400, ...)
-
-    # TODO 7: Goi model.predict([req.features]) de lay ket qua du doan.
-    # pred = model.predict(...)
-
-    # TODO 8: Tra ve dict chua "prediction" (int) va "label" (string).
-    # Nhan tuong ung: 0 -> "thu_nhap_thap", 1 -> "thu_nhap_cao"
-    # return {"prediction": ..., "label": ...}
-
-    pass  # xoa dong nay sau khi hoan thanh tat ca TODO ben tren
+async def score(req: ScoreRequest) -> dict[str, int | str]:
+    if len(req.features) != 10:
+        raise HTTPException(
+            status_code=400, detail="Expected 10 features (adult income)"
+        )
+    probability = float(app.state.model.predict_proba([req.features])[0][1])
+    prediction = int(probability >= app.state.decision_threshold)
+    return {
+        "prediction": prediction,
+        "label": "thu_nhap_cao" if prediction else "thu_nhap_thap",
+    }
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8080)

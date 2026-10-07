@@ -1,0 +1,4 @@
+[core]
+    remote = labstore
+['remote "labstore"']
+    url = s3://vinai-day21-duy-2a202602913-060668531069/dvc

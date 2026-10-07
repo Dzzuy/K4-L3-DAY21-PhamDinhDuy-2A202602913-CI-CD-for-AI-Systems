@@ -166,6 +166,7 @@ jobs:
           )
           commands = [
               "set -eu",
+              "/home/ubuntu/income-venv/bin/python -m pip install --no-cache-dir numpy==1.26.4",
               download,
               "chown ubuntu:ubuntu /home/ubuntu/src/serve.py",
               "systemctl restart income-api",

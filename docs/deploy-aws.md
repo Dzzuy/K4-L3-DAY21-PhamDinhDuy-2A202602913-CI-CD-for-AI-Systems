@@ -12,7 +12,7 @@ The repository is configured for S3 and an EC2 Ubuntu VM in `us-east-1`. The pri
 
 1. The Ubuntu 24.04 `t3.micro` instance has profile `Day21IncomeEC2`. Its S3 policy reads only `artifacts/current/manifest.json`, `artifacts/runs/*`, and `deployment/serve.py`. `AmazonSSMManagedInstanceCore` lets AWS Systems Manager manage the VM without an access key or inbound SSH.
 2. The dedicated security group exposes only TCP 8080 for the lab API. Port 22 is closed. The launch public IP is above; check the current IP again if the VM is stopped and restarted.
-3. Cloud-init installed Python 3.12 and `~/income-venv` with `fastapi==0.111.0 uvicorn==0.29.0 scikit-learn==1.4.2 joblib==1.4.2 boto3==1.43.100`. It created `~/src`, `~/models`, and `/etc/systemd/system/income-api.service`. The service is enabled but waits for the first model release before starting.
+3. Cloud-init installed Python 3.12 and `~/income-venv` with `fastapi==0.111.0 uvicorn==0.29.0 scikit-learn==1.4.2 joblib==1.4.2 boto3==1.43.100`. The first deployment pins NumPy to `1.26.4` to match the tested scikit-learn build. Cloud-init created `~/src`, `~/models`, and `/etc/systemd/system/income-api.service`. The service is enabled but waits for the first model release before starting.
 4. The workflow uploads `src/serve.py` to S3, promotes the validated model, and sends an `AWS-RunShellScript` command to this one VM to download source, restart the service, and check `/healthz`.
 
 ## GitHub Actions secrets
